@@ -12,3 +12,4 @@ numpy==1.26.2
 torch==2.1.1
 torchvision==0.16.1
 gunicorn==21.2.0
+markitdown==0.0.1a2

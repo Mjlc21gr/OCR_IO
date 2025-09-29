@@ -1,5 +1,5 @@
 """
-Super OCR API - Flask Application for Google Cloud Run
+OCR API - Flask Application for Google Cloud Run
 Soporta: Imágenes (JPG, PNG, etc), PDFs, Word, PowerPoint
 """
 
@@ -34,6 +34,12 @@ try:
     PPTX_AVAILABLE = True
 except ImportError:
     PPTX_AVAILABLE = False
+
+try:
+    from markitdown import MarkItDown
+    MARKITDOWN_AVAILABLE = True
+except ImportError:
+    MARKITDOWN_AVAILABLE = False
 
 # Configuración
 app = Flask(__name__)
@@ -329,19 +335,33 @@ pdf_processor = PDFProcessor(ocr_processor)
 word_processor = WordProcessor()
 ppt_processor = PowerPointProcessor()
 
+# Crear procesador MarkItDown si está disponible
+if MARKITDOWN_AVAILABLE:
+    markitdown = MarkItDown()
+    print("✅ MarkItDown disponible")
+else:
+    markitdown = None
+    print("⚠️ MarkItDown no disponible")
+
 
 @app.route('/', methods=['GET'])
 def home():
     """Endpoint de información"""
     return jsonify({
         'service': 'Super OCR API',
-        'version': '1.0.0',
+        'version': '2.0.0',
         'status': 'active',
         'endpoints': {
             'process': {
                 'url': '/api/process',
                 'method': 'POST',
-                'description': 'Procesar documento (imagen, PDF, Word, PowerPoint)'
+                'description': 'Procesar documento (OCR con Tesseract/EasyOCR)'
+            },
+            'process_markdown': {
+                'url': '/api/process-markdown',
+                'method': 'POST',
+                'description': 'Procesar documento y retornar en formato Markdown (MarkItDown)',
+                'available': MARKITDOWN_AVAILABLE
             },
             'health': {
                 'url': '/health',
@@ -354,6 +374,11 @@ def home():
             'pdf': list(DocumentProcessor.ALLOWED_EXTENSIONS['pdf']),
             'word': list(DocumentProcessor.ALLOWED_EXTENSIONS['word']),
             'powerpoint': list(DocumentProcessor.ALLOWED_EXTENSIONS['powerpoint'])
+        },
+        'features': {
+            'ocr_tesseract': True,
+            'ocr_easyocr': easyocr_reader is not None,
+            'markdown_support': MARKITDOWN_AVAILABLE
         }
     })
 
@@ -425,6 +450,71 @@ def process_document():
                 'extension': ext,
                 'timestamp': datetime.now().isoformat(),
                 'result': result
+            }
+            
+            return jsonify(response), 200
+            
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise e
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+
+@app.route('/api/process-markdown', methods=['POST'])
+def process_markdown():
+    """Procesar documento y retornar en formato Markdown usando MarkItDown"""
+    try:
+        if not MARKITDOWN_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'error': 'MarkItDown no está disponible en este servidor'
+            }), 500
+        
+        if 'file' not in request.files:
+            return jsonify({'error': 'No se encontró archivo en la solicitud'}), 400
+        
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({'error': 'Nombre de archivo vacío'}), 400
+        
+        # Guardar archivo temporal
+        filename = secure_filename(file.filename)
+        file_ext = os.path.splitext(filename)[1]
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            file.save(tmp_file.name)
+            temp_path = tmp_file.name
+        
+        try:
+            # Procesar con MarkItDown
+            result = markitdown.convert(temp_path)
+            
+            # Limpiar archivo temporal
+            os.unlink(temp_path)
+            
+            # Preparar respuesta
+            markdown_text = result.text_content
+            
+            response = {
+                'success': True,
+                'filename': filename,
+                'file_extension': file_ext,
+                'timestamp': datetime.now().isoformat(),
+                'processor': 'markitdown',
+                'result': {
+                    'markdown': markdown_text,
+                    'char_count': len(markdown_text),
+                    'word_count': len(markdown_text.split()),
+                    'line_count': len(markdown_text.split('\n'))
+                }
             }
             
             return jsonify(response), 200
