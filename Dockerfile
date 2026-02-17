@@ -9,15 +9,14 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-spa \
     tesseract-ocr-eng \
-    tesseract-ocr-fra \
     poppler-utils \
-    libgl1 \
+    libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender1 \
     libgomp1 \
-    libopencv-dev \
+    libgthread-2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar requirements
