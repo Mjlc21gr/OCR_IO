@@ -79,10 +79,33 @@ if GEMINI_AVAILABLE and GEMINI_API_KEY:
     except Exception as e:
         print(f"⚠️ Error configurando Gemini: {e}")
 
-# Inicializar EasyOCR globalmente
-print("🚀 Inicializando EasyOCR Ultra Pro...")
-easyocr_reader = easyocr.Reader(['es', 'en'], gpu=False)
-print("✅ EasyOCR Ultra Pro listo")
+# Inicializar EasyOCR de forma lazy (solo cuando se necesite)
+easyocr_reader = None
+EASYOCR_AVAILABLE = False
+
+def get_easyocr_reader():
+    """Obtener lector de EasyOCR (inicialización lazy)"""
+    global easyocr_reader, EASYOCR_AVAILABLE
+    
+    if easyocr_reader is not None:
+        return easyocr_reader
+    
+    try:
+        print("🔧 Inicializando EasyOCR...")
+        # Silenciar progreso de descarga
+        import warnings
+        warnings.filterwarnings('ignore')
+        
+        easyocr_reader = easyocr.Reader(['es', 'en'], gpu=False, verbose=False)
+        EASYOCR_AVAILABLE = True
+        print("✅ EasyOCR listo")
+        return easyocr_reader
+    except Exception as e:
+        print(f"⚠️ EasyOCR no disponible: {e}")
+        EASYOCR_AVAILABLE = False
+        return None
+
+print("✅ OCR Ultra Pro API iniciado (EasyOCR se cargará cuando se necesite)")
 
 
 class DocumentProcessor:
@@ -202,8 +225,12 @@ class UltraProOCRProcessor:
     """Motor OCR ULTRA PROFESIONAL con múltiples engines y fallback inteligente"""
     
     def __init__(self):
-        self.easyocr_reader = easyocr_reader
+        # EasyOCR se inicializará cuando se necesite (lazy loading)
         self.enhancer = UltraProImageEnhancer()
+        
+    def get_easyocr_reader(self):
+        """Obtener lector de EasyOCR con inicialización lazy"""
+        return get_easyocr_reader()
         
     def process_with_tesseract_ultra(self, image):
         """Tesseract con 6 configuraciones ultra profesionales"""
@@ -265,12 +292,18 @@ class UltraProOCRProcessor:
     def process_with_easyocr_ultra(self, image_path):
         """EasyOCR con configuraciones ultra profesionales"""
         try:
+            # Inicializar EasyOCR solo cuando se necesite
+            reader = self.get_easyocr_reader()
+            
+            if reader is None:
+                return {'text': '', 'confidence': 0, 'error': 'EasyOCR no disponible', 'score': 0}
+            
             # Diferentes niveles de confianza
             confidence_levels = [0.1, 0.25, 0.4]
             best_result = {'text': '', 'confidence': 0, 'detections': 0, 'score': 0}
             
             for conf_threshold in confidence_levels:
-                results = self.easyocr_reader.readtext(image_path, detail=1)
+                results = reader.readtext(image_path, detail=1)
                 
                 # Filtrar por confianza
                 valid_results = [item for item in results if item[2] >= conf_threshold]
@@ -883,7 +916,7 @@ def health():
         'timestamp': datetime.now().isoformat(),
         'engines': {
             'tesseract': True,
-            'easyocr': easyocr_reader is not None,
+            'easyocr': EASYOCR_AVAILABLE or easyocr_reader is not None,
             'gemini': gemini_model is not None,
             'pdf': PDF_AVAILABLE,
             'word': DOCX_AVAILABLE,
@@ -894,7 +927,8 @@ def health():
             'image_enhancement': True,
             'multi_config_ocr': True,
             'quality_analysis': True,
-            'intelligent_fallback': gemini_model is not None
+            'intelligent_fallback': gemini_model is not None,
+            'lazy_loading': True
         }
     }), 200
 
