@@ -625,85 +625,123 @@ class PDFProcessor:
         if not PDF_AVAILABLE:
             return {'success': False, 'error': 'PyMuPDF no disponible'}
         
+        pdf_doc = None
         try:
             pdf_doc = fitz.open(pdf_path)
+            total_pages_in_doc = pdf_doc.page_count
             pages = []
             total_text = ''
             ocr_success_count = 0
             gemini_usage_count = 0
             failed_count = 0
+            direct_text_count = 0
             
             # Limitar páginas para evitar timeouts
-            max_pages = min(pdf_doc.page_count, 20)
+            max_pages = min(total_pages_in_doc, 20)
             
             print(f"📄 Procesando PDF: {max_pages} páginas...")
             
             for page_num in range(max_pages):
                 page = pdf_doc[page_num]
+                page_result = None
                 
                 # Intentar extracción directa primero
-                direct_text = page.get_text().strip()
+                try:
+                    direct_text = page.get_text().strip()
+                    
+                    if direct_text and len(direct_text) > 50:
+                        # Texto directo disponible (PDF con texto)
+                        page_result = {
+                            'page': page_num + 1,
+                            'text': direct_text,
+                            'method': '📄 Extracción directa',
+                            'char_count': len(direct_text),
+                            'success': True
+                        }
+                        direct_text_count += 1
+                        print(f"  ✅ Página {page_num + 1}: Texto directo ({len(direct_text)} caracteres)")
+                except Exception as e:
+                    print(f"  ⚠️ Error en extracción directa página {page_num + 1}: {e}")
                 
-                if direct_text and len(direct_text) > 50:
-                    # Texto directo disponible (PDF con texto)
-                    page_result = {
-                        'page': page_num + 1,
-                        'text': direct_text,
-                        'method': '📄 Extracción directa',
-                        'char_count': len(direct_text),
-                        'success': True
-                    }
-                    ocr_success_count += 1
-                    print(f"  ✅ Página {page_num + 1}: Texto directo")
-                else:
+                # Si no hay texto directo, usar OCR
+                if page_result is None:
                     # Necesita OCR (PDF escaneado)
                     print(f"  🔍 Página {page_num + 1}: Aplicando OCR...")
                     
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                        pix.save(tmp.name)
-                        ocr_result = self.ocr.process_image_ultra_pro(tmp.name, use_gemini_fallback)
-                        os.unlink(tmp.name)
-                    
-                    if ocr_result.get('success'):
-                        method_emoji = '🆓' if ocr_result.get('method') == 'ocr_ultra_pro' else '🤖'
-                        page_result = {
-                            'page': page_num + 1,
-                            'text': ocr_result.get('text', ''),
-                            'method': f"{method_emoji} {ocr_result.get('method_name', 'OCR')}",
-                            'confidence': ocr_result.get('confidence', 0),
-                            'quality_score': ocr_result.get('quality_score', 0),
-                            'processing_time': ocr_result.get('processing_time', 0),
-                            'success': True
-                        }
+                    try:
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                         
-                        if ocr_result.get('method') == 'gemini_fallback':
-                            gemini_usage_count += 1
-                            print(f"    🤖 Página {page_num + 1}: Gemini AI usado")
+                        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                            pix.save(tmp.name)
+                            temp_img_path = tmp.name
+                        
+                        try:
+                            ocr_result = self.ocr.process_image_ultra_pro(temp_img_path, use_gemini_fallback)
+                        finally:
+                            # Asegurar que se elimine el archivo temporal
+                            if os.path.exists(temp_img_path):
+                                os.unlink(temp_img_path)
+                        
+                        if ocr_result.get('success'):
+                            method_emoji = '🆓' if ocr_result.get('method') == 'ocr_ultra_pro' else '🤖'
+                            page_result = {
+                                'page': page_num + 1,
+                                'text': ocr_result.get('text', ''),
+                                'method': f"{method_emoji} {ocr_result.get('method_name', 'OCR')}",
+                                'confidence': ocr_result.get('confidence', 0),
+                                'quality_score': ocr_result.get('quality_score', 0),
+                                'processing_time': ocr_result.get('processing_time', 0),
+                                'success': True
+                            }
+                            
+                            if ocr_result.get('method') == 'gemini_fallback':
+                                gemini_usage_count += 1
+                                print(f"    🤖 Página {page_num + 1}: Gemini AI usado")
+                            else:
+                                ocr_success_count += 1
+                                print(f"    ✅ Página {page_num + 1}: OCR gratuito")
                         else:
-                            ocr_success_count += 1
-                            print(f"    ✅ Página {page_num + 1}: OCR gratuito")
-                    else:
+                            failed_count += 1
+                            page_result = {
+                                'page': page_num + 1,
+                                'text': '',
+                                'method': '❌ Procesamiento fallido',
+                                'error': ocr_result.get('error', 'Unknown error'),
+                                'success': False
+                            }
+                            print(f"    ❌ Página {page_num + 1}: Falló")
+                    except Exception as e:
                         failed_count += 1
                         page_result = {
                             'page': page_num + 1,
                             'text': '',
-                            'method': '❌ Procesamiento fallido',
-                            'error': ocr_result.get('error', 'Unknown error'),
+                            'method': '❌ Error en OCR',
+                            'error': f'Error procesando imagen: {str(e)}',
                             'success': False
                         }
-                        print(f"    ❌ Página {page_num + 1}: Falló")
+                        print(f"    ❌ Página {page_num + 1}: Error en OCR - {e}")
                 
-                pages.append(page_result)
-                total_text += page_result.get('text', '') + '\n\n'
+                # Agregar resultado de la página
+                if page_result:
+                    pages.append(page_result)
+                    page_text = page_result.get('text', '')
+                    total_text += page_text + '\n\n'
+                    print(f"    📝 Acumulado: {len(total_text)} caracteres totales")
             
-            pdf_doc.close()
+            # Cerrar PDF antes de generar resultado
+            if pdf_doc is not None:
+                try:
+                    pdf_doc.close()
+                    pdf_doc = None
+                    print("  ✅ PDF cerrado correctamente")
+                except Exception as e:
+                    print(f"  ⚠️ Error cerrando PDF: {e}")
             
             # Estadísticas y recomendaciones
             total_pages_processed = len(pages)
-            success_rate = ((ocr_success_count + gemini_usage_count) / total_pages_processed * 100) if total_pages_processed > 0 else 0
-            free_rate = (ocr_success_count / total_pages_processed * 100) if total_pages_processed > 0 else 0
+            success_count = direct_text_count + ocr_success_count + gemini_usage_count
+            success_rate = (success_count / total_pages_processed * 100) if total_pages_processed > 0 else 0
+            free_rate = ((direct_text_count + ocr_success_count) / total_pages_processed * 100) if total_pages_processed > 0 else 0
             
             # Generar recomendación
             if free_rate >= 90:
@@ -718,15 +756,20 @@ class PDFProcessor:
             if failed_count > 0:
                 recommendation += f" | ⚠️ {failed_count} página(s) fallaron"
             
-            return {
+            total_text_cleaned = total_text.strip()
+            
+            print(f"✅ Resultado final: {len(total_text_cleaned)} caracteres, {len(pages)} páginas")
+            
+            result = {
                 'success': True,
                 'file_type': 'pdf',
-                'total_pages': pdf_doc.page_count if 'pdf_doc' in dir() else max_pages,
+                'total_pages': total_pages_in_doc,
                 'pages_processed': total_pages_processed,
                 'pages': pages,
-                'total_text': total_text.strip(),
-                'char_count': len(total_text),
+                'total_text': total_text_cleaned,
+                'char_count': len(total_text_cleaned),
                 'statistics': {
+                    'direct_extraction': direct_text_count,
                     'free_ocr': ocr_success_count,
                     'ai_processing': gemini_usage_count,
                     'failed': failed_count,
@@ -736,12 +779,26 @@ class PDFProcessor:
                 'recommendation': recommendation
             }
             
+            return result
+            
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"❌ Error en process PDF: {error_details}")
             return {
                 'success': False,
                 'error': f'❌ Error procesando PDF: {str(e)}',
-                'file_type': 'pdf'
+                'file_type': 'pdf',
+                'error_details': error_details
             }
+        finally:
+            # Asegurar que el PDF se cierre siempre (si aún está abierto)
+            if pdf_doc is not None:
+                try:
+                    pdf_doc.close()
+                    print("  ✅ PDF cerrado en finally")
+                except Exception as e:
+                    print(f"  ⚠️ Error cerrando PDF en finally: {e}")
 
 
 class WordProcessor:
